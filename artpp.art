@@ -1,0 +1,466 @@
+;artpp.art   v0.3   date: 30 june 2021
+; mikeparr@live.com
+
+;MIT License
+;Copyright (c) 2021 Mike Parr
+;
+;Permission is hereby granted, free of charge, to any person obtaining a copy
+;of this software and associated documentation files (the "Software"), to deal
+;in the Software without restriction, including without limitation the rights
+;to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+;copies of the Software, and to permit persons to whom the Software is
+;furnished to do so, subject to the following conditions:
+;
+;The above copyright notice and this permission notice shall be included in all
+;copies or substantial portions of the Software.
+;
+;THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+;IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+;FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+;AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+;OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;SOFTWARE.
+;=====================================================================
+;
+;Notes on pretty printer artpp.art   mikeparr@live.com
+;=====================================================
+;
+;Overview
+;========
+;It does not add extra newlines.
+;
+;It tries to check  for unmatched [ ]  { }  ""  ` `.  These errors are
+;written to a status file.
+;
+;It does not recognise keywords (I know there aren't any! )
+;
+;{  }   and   {:   :}  are treated the same, no extra indenting is done.
+;this may change.
+;
+;Every [ and ]  is counted for indenting, but they only actually cause
+;indenting when at the start of a line, so:
+;[
+;[xx]  ]
+;becomes
+;[
+;   [xx]   ]
+;
+;and
+;[
+;[[xxxx
+;]
+;]
+;]
+;becomes
+;
+;[
+;    [[xxxx
+;        ]
+;    ]
+;]
+;
+;=================================================
+;
+;Program Design
+;==============
+;It could possibly be made much shorter if I used the 'code-as-data'
+;approach, getting the type of each item, but I wanted it to work with
+;incorrect code (i.e. report on possible errors).
+;
+;The reason for the 2 output files, is to allow for a variety of uses - e.g.
+;as part of an IDE, or as a command-line tool.  An empty status file can be
+;detected, and the programmer can decide whether to update the original file
+;or not.  I'm a bit wary about trusting it yet, as I have not used it much.
+;
+;It does not use recursion to handle [nested] blocks - to make it easy to
+;spot incorrect nesting.
+;
+;The style is loosely based on Michael Jackson's JSP method.  Each section of
+;program assumes that the first character of the item it will process is in
+;the 'ch' variable.  After a section does its work, it does a 'read-ahead' to
+;prepare for the next section.
+;
+;The reason for processing the comments and strings is because they might
+;contain quotes, brackets, etc.
+;=====================================================================
+;
+;USAGE
+;eg:    arturo.exe artpp.art my-art-prog.art     (i.e. 1 command-line arg)
+;2 output files are always produced:
+; artpp-result.art       (the reformatted code)
+; artpp-status.txt:
+;    sometimes, code errors (e.g. wrongly-nested [...]) mean that
+;    formatting cannot be done properly.  Artpp checks for errors
+;    in "..."  {...} [...] (...) `x' (single characters).
+;    If the status file is empty, no errors were found, and the created .art
+;    file should??  be OK. If the status file is not empty, it contains
+;    error details, and the art output should not be used.  However,
+;    it CAN be useful for finding [...] errors - you can see where the
+;    nesting went wrong.
+;====================================================================
+; MAIN todo issues
+; treat {  }  and {:   } differently(maybe)
+;======================================================================
+
+;====================================================================
+;CHANGES since previous version:
+;
+;====================================================================-
+
+;globals
+outString: new  ""     ;output text.   new IS needed here
+s: new ""              ;input text
+lineNum: 1
+endfile: false         ;true when attempt to read beyond last ch
+chNum: 0               ; ch index in big string
+ch: ` `                ;current char to process
+
+squares: 0             ; +1 for left, -1 right
+curlies: 0
+rounds: 0
+
+gap: 0
+messages: new  ""     ;errors in nesting, etc
+resultFile: "./artpp-result.art"
+statusFile: "./artpp-status.txt"
+
+;================================================================-
+bug: function [mess][   ;for debugging
+    rep: input "At: "++mess   ;pause
+    ;print "bug: "++mess
+]
+
+;================================================================--
+outCh: function [c] [    ;write 1 char (or string)
+    'outString++c
+]
+; ================================================================
+outLn: function [] [     ;write a newline
+    'outString++`\n`
+]
+
+;================================================================--
+readLines: function [inFile]  [ ;return lines, LF at end of each
+    return read inFile
+]
+
+;================================================================--
+nextCh:  function [ ].export:[endfile chNum lineNum] [
+    ;next input char,   endfile set when attempt to read past end
+    ; also, return a space when past end
+    ; update line number if needed
+    tempch: ` `
+    if? chNum >= size s [
+        tempch: ` `         ;no more left
+        endfile: true
+    ]
+    else [
+        chNum: chNum+1
+        tempch: get s (chNum-1)
+        if tempch=`\n`  [
+            lineNum: lineNum+1
+        ]
+    ]
+    return tempch
+]
+;============================================================---
+checkDashDash: function[] [  ;look ahead for -- after a -
+    if? chNum >= size s  [
+        return false
+    ] else [
+        if? and? ((get s chNum ) = `-`)  ((get s (chNum+1))=`-`) [
+            return true
+        ] else [
+            return false
+        ]
+    ]
+]
+
+;============================================================--
+checkGT: function[] [   ;look ahead for > after >
+    if? chNum >= size s  [
+        return false
+    ] else [
+        if? (get s chNum ) = `>`   [
+            return true
+        ] else [
+            return false
+        ]
+    ]
+]
+
+;============================================================-
+isWhite: function [ ].export: [ch]
+[               ; is export needed, above? yes
+    if? or? (ch=`\t`) (ch=` `) [
+        return  true
+    ]
+    else  [
+        return  false
+    ]
+]
+
+;============================================================--
+skipWhite: function[]    .export:[ ch   chNum lineNum]
+;set ch to next non-space.  It may be a non-space already.
+;affects ch.  chNum IS needed in export
+[
+    while [and? ( isWhite) (not? endfile) ] [
+        ch: nextCh
+    ]
+]
+
+;============================================================
+
+lineStart: function[].export:
+[endfile ch quoteEOL curlies squares rounds gap chNum messages ]
+;process first non-space in line, and indent if needed.
+; deal with any [ ], and ---
+;NB this code could be in pretty func - only moved here so code is more manageable
+[
+    backTick: first "`"
+    gapSize: 4         ;todo make global const
+    skipWhite
+    if? ch=`[`  [
+        squares: squares+1
+        outCh indent.n:gap ""
+        outCh `[`
+        gap: gap+gapSize
+        ch: nextCh
+    ];if
+    
+    else [
+        if? ch=`]` [
+            if squares = 0 [     ;todo how do i break a long line properly?
+                messages: append messages ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
+            ]
+            squares: squares-1
+            gap: gap-gapSize
+            outCh indent.n:gap ""
+            outCh `]`
+            ch: nextCh
+        ] ;if
+        
+        else [
+            if? and? (ch=`-`) checkDashDash [  ;3 minimum for big text block
+                ;assuming that --- can be indented
+                outCh `-`
+                ch: nextCh
+                while [not? endfile ]  [
+                    outCh ch     ;copy the  --- chars and rest, including LFs
+                    ch: nextCh
+                ]
+            ];if
+            
+            else [
+                if? ch=`\n` [ ;was a blank line, dont advance past the EOL char
+                    outCh indent.n:gap ""
+                ]
+                
+                else [ ;not a special char at start of the line
+                    outCh indent.n:gap ""   ;
+                ] ;not special
+            ]
+        ]      ;cant use switch, case etc due to nature of conditions
+    ]
+]
+
+;====================================================================---
+
+pretty: function [].export:
+[endfile   curlies squares rounds  chNum ch messages gap]   [
+    backTick: first "`"   ;no ther way?
+    gapSize: 4
+    lineStart
+    while [not? endfile]  [   ;over all chars
+        ; bug  "pretty loop on "++ch
+        case [ch]
+        when? [ = `\n` ] [    ; EOL
+            outLn
+            ch: nextCh
+            lineStart
+        ]    ;when
+        
+        when? [= `;`]  [  ; ok    ; absorb  to eol .nb comments will get indented
+            outCh `;`
+            ch: nextCh
+            while [and?(ch <> `\n` ) (not? endfile) ]  [ ;copy the comment
+                outCh ch
+                ch: nextCh
+            ]
+            ;exit on LF
+        ] ;when
+        
+        when? [ = `"`] [      ;absorb a " "
+            outCh `"`
+            ch: nextCh      ;todo in pas  convert rules - while [  and?before
+            while [and? (and?  (ch <> `"` ) (ch<> `\n`) ) (not? endfile) ]  [
+                outCh ch
+                if ch=`\\` [   ;escape  - I just wrote a \
+                    ch: nextCh    ;eg might be a ", at worst
+                    outCh ch     ;always output it
+                ] ;if
+                ch: nextCh
+            ] ;while
+            
+            if? ch=`\n`   [  ;how did the loop above terminate?
+                messages: append messages ("Error: End-of-line found inside \"...\" in line: "  ++ (to :string lineNum-1) ++"\n")
+                ;..  and let \n get picked up at top of main loop
+            ]
+            else [
+                outCh `"`
+                ch: nextCh
+            ]
+        ] ;when
+        
+        when? [= backTick]  [ ;   absorb a backtick: `X` or? `\X`
+            outCh backTick
+            ch: nextCh
+            outCh ch    ;the   X or? the \
+            if ch=`\\`  [   ;escape  - I just wrote a \
+                ch: nextCh   ;     read the X
+                outCh ch      ; X
+            ]
+            
+            ch: nextCh     ;   the `  -  check it
+            if? ch<> backTick [
+                messages: append messages ("Error: missing backtick ` in line: "  ++ (to :string lineNum) ++"\n")
+                outCh ch   ;so we see error ch in file
+                ch: nextCh
+            ] else  [
+                outCh ch
+                ch: nextCh     ;todo simplify this 'if logic
+            ]
+            
+        ] ;when
+        when? [ = `>` ] [     ;look for a string quote gt gt
+            if? checkGT [
+                while [and?  (ch<> `\n`)  (not? endfile) ]  [
+                    outCh ch
+                    ch: nextCh
+                ] ;while
+                outCh `\n`
+                ch: nextCh
+                
+            ] else [
+                outCh `>`   ;not got >>
+                ch: nextCh
+            ]
+        ];when
+        
+        when? [ = `{` ]   [
+            curlies: curlies+1
+            outCh `{`
+            ch: nextCh
+            if? ch=`:` [
+                outCh ":"
+                ch: nextCh
+                while [and?(ch <> `}`)  (not? endfile) ]  [
+                    outCh ch           ;not indented, only copied
+                    ch: nextCh
+                ]
+                ; for now, to be safe, treat both strings the same!!! todo
+            ] else [
+                
+                while [and?(ch <> `}`)  (not? endfile) ]  [
+                    outCh ch
+                    
+                    if ch=`\n` [   ;relative indent , mabe todo
+                    ]
+                    ch: nextCh
+                ]
+            ]
+            ;here on } or endfile  eof err-todo
+            if? ch=`}` [
+                curlies: curlies-1   ;not? if? eof    ;todo curlies can't be nested sensibly
+            ]
+            outCh `}`
+            ch: nextCh
+        ]  ;when
+        
+        when? [= `[` ]  [  ;  embedded [, otherwise detected in lineStart code
+            squares: squares+1    ;note its effect, but display like any other char
+            outCh `[`
+            gap: gap+gapSize
+            ch: nextCh
+        ] ;when
+        
+        when? [ = `]`]  [  ;embedded ], otherwise detected in LF code
+            if squares = 0 [
+                messages: append messages ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
+            ]
+            squares: squares-1
+            gap: gap-gapSize
+            outCh `]`
+            ch: nextCh
+        ]  ;when
+        
+        when? [=`(` ]  [  ;count ( and )
+            rounds: rounds+1
+            outCh `(`
+            ch: nextCh
+        ] ;when
+        
+        when? [=`)` ]  [
+            rounds: rounds-1
+            if rounds < 0 [
+                messages: append messages ("too many closing rounds  ] at line: " ++ to :string lineNum)
+            ]
+            outCh `)`
+            ch: nextCh
+        ] ;when
+        
+        else  [       ;nothing special - copy, move on
+            outCh ch
+            ch: nextCh
+        ] ;else
+        
+    ];while
+]
+
+;====================================================================---
+
+makeErrors: function[errs curlies rounds squares] [ ;build error string
+    ; so far, got errs with line numbers.
+    ; now, add the ones I could not do until EOF reached
+    
+    if squares > 0 [
+        errs: append errs "Error: missing closing square ]\n"
+    ]
+    if rounds > 0 [
+        errs: append errs "Error: missing closing round )\n"
+    ]
+    if curlies > 0 [
+        errs: append errs "Error: missing closing curly }\n"
+    ]
+    return errs
+]
+
+;====================================================================
+checkFile: function [fn][      ;exists? - else panic
+    if (not? exists? fn)[
+        print "File not found: "++fn
+        panic  "Error: "++fn
+    ]
+]
+
+;main  ============================================================-
+
+if? (size arg) <> 1[
+    print "1 argument needed, you gave " ++ to :string(size arg)
+    panic ""
+]
+checkFile arg\0
+s: readLines arg\0
+
+ch: nextCh  ;init lex (nb other values in globals at top)
+skipWhite
+
+pretty
+messages: makeErrors messages   curlies rounds squares
+print messages  ;errs
+write resultFile outString   ;code
+write statusFile  messages
+print "Done!"
+;  The music's over...
