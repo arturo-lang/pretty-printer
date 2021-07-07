@@ -1,6 +1,6 @@
-;artpp.art   v0.3   date: 30 june 2021
+;artpp.art   v0.4   date: 10 july 2021
 ; mikeparr@live.com
-
+;
 ;MIT License
 ;Copyright (c) 2021 Mike Parr
 ;
@@ -87,7 +87,7 @@
 ;
 ;USAGE
 ;eg:    arturo.exe artpp.art my-art-prog.art     (i.e. 1 command-line arg)
-;2 output files are always produced:
+;3 output files are always produced:
 ; artpp-result.art       (the reformatted code)
 ; artpp-status.txt:
 ;    sometimes, code errors (e.g. wrongly-nested [...]) mean that
@@ -98,6 +98,12 @@
 ;    error details, and the art output should not be used.  However,
 ;    it CAN be useful for finding [...] errors - you can see where the
 ;    nesting went wrong.
+; artpp-rounds.txt:
+;    (rounds) can be placed almost anywhere (not just in arithmetc expressions
+;    and function calls as in other languages. In a large program it can
+;    be hard to find such errors, and they might not produce error messages.
+;    artpp  produces a file showing only the lines that contain ( ), to help
+;    you to find such errors.
 ;====================================================================
 ; MAIN todo issues
 ; treat {  }  and {:   } differently(maybe)
@@ -105,7 +111,8 @@
 
 ;====================================================================
 ;CHANGES since previous version:
-;
+;  provide 3rd output file, with lines containing round-bracket lines only.
+;  need to amend above docs
 ;====================================================================-
 
 ;globals
@@ -119,11 +126,15 @@ ch: ` `                ;current char to process
 squares: 0             ; +1 for left, -1 right
 curlies: 0
 rounds: 0
-
 gap: 0
+
+roundsLines: new ""
+fileAsBlock: new []
+doneThisLine: 0   ;recently copied this line with (or)
 messages: new  ""     ;errors in nesting, etc
 resultFile: "./artpp-result.art"
 statusFile: "./artpp-status.txt"
+roundsFile: "./artpp-rounds.txt"
 
 ;================================================================-
 bug: function [mess][   ;for debugging
@@ -143,6 +154,9 @@ outLn: function [] [     ;write a newline
 ;================================================================--
 readLines: function [inFile]  [ ;return lines, LF at end of each
     return read inFile
+]
+readAsBlock: function [inFile] [  ;so I can easily get whole of a numbered line
+    return read.lines inFile
 ]
 
 ;================================================================--
@@ -233,7 +247,8 @@ lineStart: function[].export:
     else [
         if? ch=`]` [
             if squares = 0 [     ;todo how do i break a long line properly?
-                messages: append messages ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
+                messages: append messages
+                ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
             ]
             squares: squares-1
             gap: gap-gapSize
@@ -269,7 +284,7 @@ lineStart: function[].export:
 ;====================================================================---
 
 pretty: function [].export:
-[endfile   curlies squares rounds  chNum ch messages gap]   [
+[endfile   curlies squares rounds  chNum ch messages gap linesAsBlock roundsLines doneThisLine]   [
     backTick: first "`"   ;no ther way?
     gapSize: 4
     lineStart
@@ -305,7 +320,8 @@ pretty: function [].export:
             ] ;while
             
             if? ch=`\n`   [  ;how did the loop above terminate?
-                messages: append messages ("Error: End-of-line found inside \"...\" in line: "  ++ (to :string lineNum-1) ++"\n")
+                messages: append messages (
+                "Error: End-of-line found inside \"...\" in line: "  ++ (to :string lineNum-1) ++"\n")
                 ;..  and let \n get picked up at top of main loop
             ]
             else [
@@ -325,7 +341,8 @@ pretty: function [].export:
             
             ch: nextCh     ;   the `  -  check it
             if? ch<> backTick [
-                messages: append messages ("Error: missing backtick ` in line: "  ++ (to :string lineNum) ++"\n")
+                messages: append messages
+                ("Error: missing backtick ` in line: "  ++ (to :string lineNum) ++"\n")
                 outCh ch   ;so we see error ch in file
                 ch: nextCh
             ] else  [
@@ -388,7 +405,8 @@ pretty: function [].export:
         
         when? [ = `]`]  [  ;embedded ], otherwise detected in LF code
             if squares = 0 [
-                messages: append messages ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
+                messages: append messages
+                ("Error: too many closing squares ] at line: " ++ (to :string lineNum)++"\n")
             ]
             squares: squares-1
             gap: gap-gapSize
@@ -396,16 +414,27 @@ pretty: function [].export:
             ch: nextCh
         ]  ;when
         
-        when? [=`(` ]  [  ;count ( and )
+        when? [=`(` ]  [  ;count ( and ) -  ;added new rounds file stuff v0.4
+            if  doneThisLine <> lineNum  [
+                roundsLines:   append roundsLines  render
+                    ("|lineNum|  " ++ (get fileAsBlock lineNum-1)  ++`\n` )
+                doneThisLine: lineNum
+            ]
             rounds: rounds+1
             outCh `(`
             ch: nextCh
         ] ;when
         
         when? [=`)` ]  [
+            if  doneThisLine <> lineNum  [   ;lines with several ))) only appear once
+                roundsLines:   append roundsLines  render
+                    ("|lineNum|  " ++ (get fileAsBlock lineNum-1)  ++`\n` )
+                doneThisLine: lineNum
+            ]
             rounds: rounds-1
             if rounds < 0 [
-                messages: append messages ("too many closing rounds  ] at line: " ++ to :string lineNum)
+                messages: append messages
+                ("too many closing rounds  ) at line: " ++ (to :string lineNum) ++ `\n`)
             ]
             outCh `)`
             ch: nextCh
@@ -453,14 +482,17 @@ if? (size arg) <> 1[
 ]
 checkFile arg\0
 s: readLines arg\0
+fileAsBlock: readAsBlock arg\0
 
 ch: nextCh  ;init lex (nb other values in globals at top)
 skipWhite
 
 pretty
+
 messages: makeErrors messages   curlies rounds squares
 print messages  ;errs
 write resultFile outString   ;code
 write statusFile  messages
+write roundsFile roundsLines   ;lines with ( or )
 print "Done!"
 ;  The music's over...
