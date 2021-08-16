@@ -1,4 +1,4 @@
-;artpp.art   v0.4   date: 10 july 2021
+;artpp.art   v0.6  date: 8 Aug 2021
 ; mikeparr@live.com
 ;
 ;MIT License
@@ -30,7 +30,7 @@
 ;========
 ;It does not add extra newlines.
 ;
-;It tries to check  for unmatched [ ]  { }  ""  ` `.  These errors are
+;It tries to check  for unmatched [ ]  { } ( )  ""  ` `.  These errors are
 ;written to a status file.
 ;
 ;It does not recognise keywords (I know there aren't any! )
@@ -98,12 +98,11 @@
 ;    error details, and the art output should not be used.  However,
 ;    it CAN be useful for finding [...] errors - you can see where the
 ;    nesting went wrong.
-; artpp-rounds.txt:
-;    (rounds) can be placed almost anywhere (not just in arithmetc expressions
-;    and function calls as in other languages. In a large program it can
-;    be hard to find such errors, and they might not produce error messages.
-;    artpp  produces a file showing only the lines that contain ( ), to help
-;    you to find such errors.
+;    The file: artpp-rounds.txt is no longer produced.
+;        Instead, the number of ( and ) in each line is checked, and a
+;        warning (not an error) is given.  It is rare for matching ( and )
+;        to be spread over several lines.
+
 ;====================================================================
 ; MAIN todo issues
 ; treat {  }  and {:   } differently(maybe)
@@ -111,8 +110,8 @@
 
 ;====================================================================
 ;CHANGES since previous version:
-;  provide 3rd output file, with lines containing round-bracket lines only.
-;  need to amend above docs
+;  V0.6  -  Round () now checked in each separate line
+; v0.5 now creates output files in same dir as input file
 ;====================================================================-
 
 ;globals
@@ -122,19 +121,15 @@ lineNum: 1
 endfile: false         ;true when attempt to read beyond last ch
 chNum: 0               ; ch index in big string
 ch: ` `                ;current char to process
-
 squares: 0             ; +1 for left, -1 right
 curlies: 0
-rounds: 0
+roundsCount: 0
 gap: 0
-
 roundsLines: new ""
 fileAsBlock: new []
-doneThisLine: 0   ;recently copied this line with (or)
 messages: new  ""     ;errors in nesting, etc
-resultFile: "./artpp-result.art"
-statusFile: "./artpp-status.txt"
-roundsFile: "./artpp-rounds.txt"
+resultFile: "artpp-result.art" 
+statusFile: "artpp-status.txt"
 
 ;================================================================-
 bug: function [mess][   ;for debugging
@@ -228,10 +223,10 @@ skipWhite: function[]    .export:[ ch   chNum lineNum]
 ;============================================================
 
 lineStart: function[].export:
-[endfile ch quoteEOL curlies squares rounds gap chNum messages ]
+[endfile ch quoteEOL curlies squares gap chNum messages roundsLines]
 ;process first non-space in line, and indent if needed.
 ; deal with any [ ], and ---
-;NB this code could be in pretty func - only moved here so code is more manageable
+;NB this code could be in the pretty func - only moved here so code is more manageable
 [
     backTick: first "`"
     gapSize: 4         ;todo make global const
@@ -284,14 +279,23 @@ lineStart: function[].export:
 ;====================================================================---
 
 pretty: function [].export:
-[endfile   curlies squares rounds  chNum ch messages gap linesAsBlock roundsLines doneThisLine]   [
+[endfile   curlies squares chNum ch messages gap linesAsBlock roundsLines  ]   [
+    ;  messages: new ""   todo
     backTick: first "`"   ;no ther way?
     gapSize: 4
+    roundsCount: 0   ;calc this for EACH line
     lineStart
     while [not? endfile]  [   ;over all chars
         ; bug  "pretty loop on "++ch
+        
         case [ch]
+        
         when? [ = `\n` ] [    ; EOL
+            if roundsCount <> 0 [    ;check count ( ) in each line
+               messages: append messages
+                "Warning/hint: unbalanced round ( ) in line: " ++(to :string lineNum-1) ++ `\n`
+            ]
+            roundsCount: 0
             outLn
             ch: nextCh
             lineStart
@@ -414,28 +418,14 @@ pretty: function [].export:
             ch: nextCh
         ]  ;when
         
-        when? [=`(` ]  [  ;count ( and ) -  ;added new rounds file stuff v0.4
-            if  doneThisLine <> lineNum  [
-                roundsLines:   append roundsLines  render
-                    ("|lineNum|  " ++ (get fileAsBlock lineNum-1)  ++`\n` )
-                doneThisLine: lineNum
-            ]
-            rounds: rounds+1
+        when? [=`(` ]  [
+            roundsCount: roundsCount+1
             outCh `(`
             ch: nextCh
         ] ;when
-        
+
         when? [=`)` ]  [
-            if  doneThisLine <> lineNum  [   ;lines with several ))) only appear once
-                roundsLines:   append roundsLines  render
-                    ("|lineNum|  " ++ (get fileAsBlock lineNum-1)  ++`\n` )
-                doneThisLine: lineNum
-            ]
-            rounds: rounds-1
-            if rounds < 0 [
-                messages: append messages
-                ("too many closing rounds  ) at line: " ++ (to :string lineNum) ++ `\n`)
-            ]
+            roundsCount: roundsCount-1
             outCh `)`
             ch: nextCh
         ] ;when
@@ -450,20 +440,25 @@ pretty: function [].export:
 
 ;====================================================================---
 
-makeErrors: function[errs curlies rounds squares] [ ;build error string
+makeErrors: function[errs curlies  squares] [ ;build error string
     ; so far, got errs with line numbers.
     ; now, add the ones I could not do until EOF reached
-    
     if squares > 0 [
         errs: append errs "Error: missing closing square ]\n"
-    ]
-    if rounds > 0 [
-        errs: append errs "Error: missing closing round )\n"
     ]
     if curlies > 0 [
         errs: append errs "Error: missing closing curly }\n"
     ]
     return errs
+]
+;===================================================================
+getFileDir: function [fullPath] [  ;removes final   \filename
+    ;either- win, linux  \   /
+    slashes: {\/}
+    while [ ( index slashes (to :string last fullPath)  )= null]  [
+        fullPath: chop fullPath
+    ]
+    fullPath
 ]
 
 ;====================================================================
@@ -481,6 +476,8 @@ if? (size arg) <> 1[
     panic ""
 ]
 checkFile arg\0
+userDir: getFileDir arg\0
+
 s: readLines arg\0
 fileAsBlock: readAsBlock arg\0
 
@@ -488,11 +485,9 @@ ch: nextCh  ;init lex (nb other values in globals at top)
 skipWhite
 
 pretty
-
-messages: makeErrors messages   curlies rounds squares
+messages: makeErrors messages   curlies squares
 print messages  ;errs
-write resultFile outString   ;code
-write statusFile  messages
-write roundsFile roundsLines   ;lines with ( or )
+write userDir++resultFile outString   ;code
+write userDir++statusFile  messages
 print "Done!"
 ;  The music's over...
